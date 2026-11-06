@@ -1,0 +1,6 @@
+# Automatic HTTPS (Let's Encrypt) in front of the web container.
+{$DOMAIN} {
+	encode gzip
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	reverse_proxy web:80
+}

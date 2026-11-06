@@ -1,0 +1,68 @@
+import random, subprocess, zipfile, io
+from playwright.sync_api import sync_playwright
+import os
+B=os.environ.get('BASE_URL','http://127.0.0.1:8080'); out=os.environ.get('OUT_DIR','.')
+def sql(q): return subprocess.run(['mysql','-uroot','hhs_dev','-N','-e',q],capture_output=True,text=True).stdout.strip()
+csp=[]
+with sync_playwright() as p:
+    br=p.chromium.launch(args=['--no-sandbox'])
+    # ---------- enumerator, English, phone
+    ctx=br.new_context(viewport={'width':390,'height':844}, device_scale_factor=2, geolocation={'latitude':27.68,'longitude':85.43,'accuracy':10}, permissions=['geolocation'])
+    pg=ctx.new_page(); pg.on('console', lambda m: csp.append(m.text) if ('Content Security Policy' in m.text or 'Refused' in m.text) else None)
+    pg.on('dialog', lambda d: d.accept())
+    pg.goto(B+'/login'); pg.click('button:has-text("English")'); pg.wait_for_selector('text=Please log in')
+    pg.screenshot(path=f'{out}/p5-01-login-en.png')
+    pg.fill('#u','enumerator1'); pg.fill('#p','Demo@12345'); pg.click('button:has-text("Log in")'); pg.wait_for_selector('text=Hello')
+    pg.evaluate("navigator.serviceWorker.ready"); pg.reload(); pg.wait_for_selector('text=Hello')
+    assert pg.evaluate("!!navigator.serviceWorker.controller"), 'service worker blocked?'
+    pg.wait_for_selector('text=Waiting to send: 0', timeout=30000)
+    import time
+    for _ in range(120):
+        t = pg.inner_text('body')
+        if 'Last sync:' in t and 'Last sync: Never' not in t: break
+        time.sleep(0.5)
+    pg.wait_for_selector('text=Registered households'); pg.wait_for_timeout(500)
+    pg.screenshot(path=f'{out}/p5-02-dashboard-en.png')
+    ctx.set_offline(True); pg.reload(); pg.wait_for_selector('text=Offline')
+    pg.click('a:has-text("+ Register new household")'); pg.wait_for_selector('#st option:nth-child(2)', state='attached')
+    pg.select_option('#st', index=1); pg.fill('#hn', str(random.randint(40000,49999))); pg.fill('#fn','1'); HN='Test Family '+str(random.randint(100000,999999)); pg.fill('#hd',HN); pg.select_option('#g','१')
+    pg.click('button:has-text("Register and start survey")'); pg.wait_for_selector('text=Completion')
+    pg.get_by_label('25–45 years – Female').fill('2'); pg.get_by_label('25–45 years – Male').fill('1')
+    pg.click('button:has-text("Capture household GPS location")'); pg.wait_for_selector('text=📍')
+    pg.locator('nav[aria-label="Sections"] button').nth(1).click(); pg.wait_for_timeout(300)
+    pg.locator('#q-q6').scroll_into_view_if_needed(); pg.screenshot(path=f'{out}/p5-03-survey-en.png')
+    pg.locator('nav[aria-label="Sections"] button').nth(8).click(); pg.wait_for_timeout(300)
+    c=pg.locator('canvas').first; c.scroll_into_view_if_needed(); bb=c.bounding_box()
+    pg.mouse.move(bb['x']+20,bb['y']+50); pg.mouse.down(); pg.mouse.move(bb['x']+200,bb['y']+90,steps=8); pg.mouse.up()
+    pg.click('button[aria-label="Open calendar"]'); pg.wait_for_selector('[role=dialog]'); pg.locator('[role=dialog]').screenshot(path=f'{out}/p5-04-calendar-en.png')
+    pg.locator('[role=dialog] button:has-text("5")').first.click()
+    pg.wait_for_selector('text=Saved on this device', timeout=10000)
+    ctx.set_offline(False); pg.wait_for_selector('text=Waiting to send: 0', timeout=30000)
+    print('enumerator offline→online OK; stored:', sql("SELECT JSON_EXTRACT(answers,'$.q5.family_size'), gps_lat IS NOT NULL FROM surveys sv JOIN households h ON h.id=sv.household_id WHERE h.head_name='"+HN+"'"))
+    # ---------- supervisor reports in English + English Excel
+    sctx=br.new_context(viewport={'width':1366,'height':900}, accept_downloads=True); sp=sctx.new_page()
+    sp.on('console', lambda m: csp.append(m.text) if ('Content Security Policy' in m.text or 'Refused' in m.text) else None)
+    sp.add_init_script("localStorage.setItem('hhs.lang','en')")
+    sp.goto(B+'/login'); sp.fill('#u','supervisor1'); sp.fill('#p','Demo@12345'); sp.click('button:has-text("Log in")'); sp.wait_for_selector('text=Hello')
+    sp.goto(B+'/reports/theme/wash'); sp.wait_for_selector('section[id^="r-"]'); sp.wait_for_timeout(400)
+    sp.screenshot(path=f'{out}/p5-05-report-en.png')
+    with sp.expect_download() as dl: sp.click('button:has-text("Excel")')
+    d=dl.value; path=f'{out}/report-wash-en.xlsx'; d.save_as(path)
+    names=zipfile.ZipFile(path).read('xl/workbook.xml').decode()
+    print('english excel sheets:', 'Key indicators' in names, 'Q६' in names or 'Q6' in names)
+    # ---------- admin backup + restore via UI
+    actx=br.new_context(viewport={'width':1280,'height':900}); ap=actx.new_page(); ap.on('dialog', lambda d: d.accept())
+    ap.on('console', lambda m: csp.append(m.text) if ('Content Security Policy' in m.text or 'Refused' in m.text) else None)
+    ap.goto(B+'/login'); ap.fill('#u','admin'); ap.fill('#p',os.environ.get('ADMIN_PASSWORD','Admin@2083')); ap.click('button:has-text("लगइन")'); ap.wait_for_selector('text=नमस्ते')
+    ap.goto(B+'/admin/backups'); ap.wait_for_selector('text=ब्याकअप तथा पुनर्स्थापना')
+    ap.click('button:has-text("अहिले ब्याकअप बनाउनुहोस्")'); ap.wait_for_selector('text=ब्याकअप बन्यो', timeout=60000)
+    ap.screenshot(path=f'{out}/p5-06-backups.png')
+    before=sql("SELECT COUNT(*) FROM households")
+    sql("INSERT INTO wards (ward_no, name) VALUES (77, 'restore-test')")
+    ap.locator('button:has-text("Restore")').first.click()
+    ap.fill('input[type=password]', os.environ.get('ADMIN_PASSWORD','Admin@2083')); ap.fill('input[autocomplete=off]', 'RESTORE')
+    ap.screenshot(path=f'{out}/p5-07-restore-confirm.png')
+    ap.click('button:has-text("Restore गर्नुहोस्")'); ap.wait_for_selector('text=Restore सम्पन्न', timeout=120000)
+    print('restore: households', before, '->', sql("SELECT COUNT(*) FROM households"), '; test ward removed:', sql("SELECT COUNT(*) FROM wards WHERE ward_no=77")=='0')
+    print('CSP violations:', csp[:5])
+    br.close()

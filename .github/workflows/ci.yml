@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Unit + API tests on MySQL 8, client build
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: hhs_test
+          MYSQL_USER: hhs
+          MYSQL_PASSWORD: hhs_pass
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot" --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      DB_HOST: 127.0.0.1
+      DB_USER: hhs
+      DB_PASSWORD: hhs_pass
+      DB_NAME: hhs_test
+      DB_NAME_TEST: hhs_test
+      JWT_SECRET: ci-only-secret-0123456789abcdef0123456789abcdef
+      ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+      - run: npm ci
+        working-directory: server
+      - run: npm ci
+        working-directory: client
+      - name: Shared engine, reports, i18n
+        run: node --test shared/test/*.test.js
+      - name: API tests (real MySQL 8)
+        run: npm test
+        working-directory: server
+      - name: Client tests (UI + offline sync against the API)
+        run: npx vitest run
+        working-directory: client
+      - name: Build PWA
+        run: npm run build
+        working-directory: client
+      - name: Dependency audit
+        run: |
+          npm audit --omit=dev --audit-level=high --prefix server
+          npm audit --omit=dev --audit-level=high --prefix client
+
+  e2e:
+    name: Browser end-to-end (offline, review, reports)
+    needs: test
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: hhs_dev
+          MYSQL_USER: hhs
+          MYSQL_PASSWORD: hhs_pass
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot" --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      NODE_ENV: development
+      DB_HOST: 127.0.0.1
+      DB_USER: hhs
+      DB_PASSWORD: hhs_pass
+      DB_NAME: hhs_dev
+      JWT_SECRET: ci-only-secret-0123456789abcdef0123456789abcdef
+      ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      ADMIN_PASSWORD: Admin@20834
+      SEED_DEMO: 'true'
+      BACKUP_SCHEDULE: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: npm ci --prefix server && npm ci --prefix client
+      - run: npm run build --prefix client
+      - name: Start API and preview server
+        run: |
+          (cd server && nohup node src/index.js > ../api.log 2>&1 &)
+          (cd client && nohup npx vite preview --port 4173 --host 127.0.0.1 > ../preview.log 2>&1 &)
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:4000/api/health && break; sleep 2; done
+      - run: pip install playwright && python -m playwright install --with-deps chromium
+      - name: Offline → online
+        run: OUT_DIR=e2e-out DB_USER=root python e2e/offline_smoke.py
+        env: { MYSQL_PWD: root }
+      - name: Review cycle
+        run: |
+          node --input-type=module -e "import {buildCompleteAnswers} from './shared/test/fixtures.js'; import fs from 'node:fs'; fs.mkdirSync('e2e-out',{recursive:true}); fs.writeFileSync('e2e-out/complete.json', JSON.stringify(buildCompleteAnswers()))"
+          OUT_DIR=e2e-out python e2e/review_smoke.py
+      - name: Reports on 1000 households
+        run: |
+          (cd server && node scripts/seed-volume.js 1000)
+          OUT_DIR=e2e-out python e2e/reports_smoke.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots-and-logs
+          path: |
+            e2e-out/
+            api.log

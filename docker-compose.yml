@@ -1,0 +1,65 @@
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-hhs}
+      MYSQL_USER: ${DB_USER:-hhs}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?set DB_ROOT_PASSWORD in .env}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes: [dbdata:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${DB_ROOT_PASSWORD}"]
+      interval: 10s
+      retries: 10
+
+  api:
+    build: { context: ., dockerfile: server/Dockerfile }
+    restart: unless-stopped
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DB_HOST: db
+      DB_NAME: ${DB_NAME:-hhs}
+      DB_USER: ${DB_USER:-hhs}
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
+      ENCRYPTION_KEY_ID: ${ENCRYPTION_KEY_ID:-k1}
+      ENCRYPTION_OLD_KEYS: ${ENCRYPTION_OLD_KEYS:-}
+      CORS_ORIGIN: ${PUBLIC_URL:-http://localhost:8080}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      AUTO_MIGRATE: "true"
+      BACKUP_DIR: /backups
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-true}
+      BACKUP_HOUR_UTC: ${BACKUP_HOUR_UTC:-19}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes: [backups:/backups]
+
+  web:
+    build: { context: ., dockerfile: client/Dockerfile }
+    restart: unless-stopped
+    depends_on: [api]
+    ports: ["${WEB_PORT:-8080}:80"]
+
+  # HTTPS with automatic certificates:  docker compose --profile tls up -d   (set DOMAIN in .env)
+  caddy:
+    image: caddy:2
+    profiles: [tls]
+    restart: unless-stopped
+    depends_on: [web]
+    environment: { DOMAIN: "${DOMAIN:?set DOMAIN in .env for the tls profile}" }
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  dbdata:
+  backups:
+  caddy_data:
+  caddy_config:

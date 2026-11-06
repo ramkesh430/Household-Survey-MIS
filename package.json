@@ -1,0 +1,14 @@
+{
+  "name": "household-survey-mis",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Digital Household Survey & Management Information System (अनुसूची १ घरधुरी सर्वेक्षण)",
+  "scripts": {
+    "install:all": "npm --prefix server ci && npm --prefix client ci",
+    "test": "npm --prefix shared test && npm --prefix server test && npm --prefix client test",
+    "dev:api": "npm --prefix server run dev",
+    "dev:web": "npm --prefix client run dev",
+    "build": "npm --prefix client run build",
+    "docs:inventory": "node scripts/gen-inventory.mjs"
+  }
+}
