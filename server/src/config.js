@@ -25,6 +25,10 @@ export const config = {
     password: process.env.DB_PASSWORD ?? 'hhs_pass',
     database: isTest ? process.env.DB_NAME_TEST || 'hhs_test' : required('DB_NAME', 'hhs_dev'),
     connectionLimit: Number(process.env.DB_POOL || 10),
+    // Managed/cloud MySQL (Aiven, TiDB Cloud, …) needs TLS. DB_SSL_CA = the provider's CA certificate (PEM).
+    ...(process.env.DB_SSL === 'true'
+      ? { ssl: { ca: process.env.DB_SSL_CA ? process.env.DB_SSL_CA.replace(/\\n/g, '\n') : undefined, rejectUnauthorized: true, minVersion: 'TLSv1.2' } }
+      : {}),
   },
   jwt: {
     secret: jwtSecret,
